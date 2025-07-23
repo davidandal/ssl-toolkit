@@ -24,7 +24,7 @@ def get_image_transform(img_size=224, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 def get_tabular_transform():
     return lambda row: torch.tensor(np.array(list(row.values())), dtype=torch.float32)
 
-def get_preprocessor(input_type, **kwargs):
+def get_processor(input_type, **kwargs):
     if input_type == 'text':
         return get_text_tokenizer(**kwargs)
     elif input_type == 'image':
