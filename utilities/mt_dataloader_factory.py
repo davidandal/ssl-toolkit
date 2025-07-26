@@ -1,15 +1,16 @@
 # dataloader_factory.py (Config-Driven Version with Separate Real SSL Support)
 
 import os
-from sklearn.model_selection import train_test_split
-from torch.utils.data import Dataset, DataLoader
+import random
+import torch
+
+from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
+from torch.utils.data import Dataset, DataLoader, TensorDataset
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
 from PIL import Image
-import numpy as np
-import random
 
-# Classes
+# Dataloader Classes
 class SemiSupervisedDataset(Dataset):
     def __init__(self, dataset, indices, transform=None):
         self.dataset = dataset
@@ -54,9 +55,37 @@ class UnlabeledFolderDataset(Dataset):
         img = Image.open(self.paths[idx]).convert("RGB")
         return self.weak_transform(img), self.strong_transform(img)
 
-# Dataloaders
+# Transform Functions
+class TabularWeakTransform:
+    def __init__(self, noise_std=0.01):
+        self.noise_std = noise_std
+
+    def __call__(self, x):
+        noise = torch.randn_like(x) * self.noise_std
+        return x + noise
+
+class TabularStrongTransform:
+    def __init__(self, noise_std=0.05, mask_ratio=0.1):
+        self.noise_std = noise_std
+        self.mask_ratio = mask_ratio
+
+    def __call__(self, x):
+        # Add stronger Gaussian noise
+        x_aug = x + torch.randn_like(x) * self.noise_std
+
+        # Randomly mask features
+        mask = torch.rand_like(x_aug) < self.mask_ratio
+        x_aug[mask] = 0  # or use mean imputation if needed
+
+        return x_aug
+
+class TabularValTransform:
+    def __call__(self, x):
+        return x  # No augmentation for validation
+
+# Dataloader Functions
 def create_image_dataloaders(config, base_transform):
-    num_labels_per_class = config["num_labels_per_class"]
+    num_labels_per_class = config["num_labels"] // len(config["image_classes"])
     batch_size = config.get("batch_size", 64)
 
     # Define transforms
@@ -120,15 +149,43 @@ def create_image_dataloaders(config, base_transform):
 
     return lb_loader, ulb_loader, val_loader
 
-def create_tabular_dataloaders():
-    ...
+def create_tabular_dataloaders(config, X, y):
+    num_labels = config.get("num_labels", 400)
+    batch_size = config.get("batch_size", 64)
+
+    # Stratified sampling for labeled data
+    stratifier = StratifiedShuffleSplit(n_splits=1, train_size=num_labels, random_state=42)
+    lb_idx, rest_idx = next(stratifier.split(X, y))
+
+    # From the rest, sample a validation set (same size as lb_idx)
+    val_size = 1 - num_labels
+    stratifier_val = StratifiedShuffleSplit(n_splits=1, train_size=val_size, random_state=99)
+    val_idx, ulb_idx = next(stratifier_val.split(X[rest_idx], y[rest_idx]))
+    val_idx = rest_idx[val_idx]
+    ulb_idx = rest_idx[ulb_idx]
+
+    base_dataset = TensorDataset(X, y)
+
+    transform_weak = TabularWeakTransform(noise_std=0.01)
+    transform_strong = TabularStrongTransform(noise_std=0.05, mask_ratio=0.1)
+    transform_val = TabularValTransform()
+
+    lb_dataset = SemiSupervisedDataset(base_dataset, lb_idx, transform_weak)
+    ulb_dataset = UnlabeledDataset(base_dataset, ulb_idx, transform_weak, transform_strong)
+    val_dataset = SemiSupervisedDataset(base_dataset, val_idx, transform_val)
+
+    lb_loader = DataLoader(lb_dataset, batch_size=batch_size, shuffle=True)
+    ulb_loader = DataLoader(ulb_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    return lb_loader, ulb_loader, val_loader
 
 # Factory
-def dataloader_factory(config, base_transform):
+def dataloader_factory(config, **kwargs):
     if config["input_type"] == "image":
-        return create_image_dataloaders(config, base_transform)
+        return create_image_dataloaders(config, **kwargs)
     elif config["input_type"] == "tabular":
-        ...        
+        return create_tabular_dataloaders(config, **kwargs)       
 
 def real_dataloader_factory(config):
     labeled_path = config["labeled_path"]

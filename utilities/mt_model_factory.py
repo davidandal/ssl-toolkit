@@ -57,27 +57,33 @@ class BERTClassifier(nn.Module):
 
 # Tabular Model
 class TabularMLP(nn.Module):
-    ...
-    # def __init__(self, input_dim=10, num_classes=4):
-    #     super().__init__()
-    #     self.net = nn.Sequential(
-    #         nn.Linear(input_dim, 64),
-    #         nn.ReLU(),
-    #         nn.Linear(64, 64),
-    #         nn.ReLU(),
-    #         nn.Linear(64, num_classes)
-    #     )
+    def __init__(self, input_dim, num_classes, hidden_dims=[64, 32], dropout=0.2, regression=False):
+        super().__init__()
 
-    # def forward(self, x):
-    #     return self.net(x)
+        layers = []
+        prev_dim = input_dim
+        for h_dim in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h_dim))
+            layers.append(nn.BatchNorm1d(h_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            prev_dim = h_dim
+
+        output_dim = 1 if regression else num_classes
+        layers.append(nn.Linear(prev_dim, output_dim))
+        
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
 
 # Model Factory
 def model_factory(input_type, **kwargs):
-    if input_type == 'image':
+    if input_type == "image":
         return SimpleCNN(**kwargs)
-    elif input_type == 'text':
+    elif input_type == "text":
         return BERTClassifier(**kwargs)
-    elif input_type == 'tabular':
+    elif input_type == "tabular":
         return TabularMLP(**kwargs)
     else:
         raise ValueError(f'Unsupported input type: {input_type}')
