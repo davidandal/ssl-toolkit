@@ -1,10 +1,12 @@
 
+import torch
 import torch.nn as nn
 import torchvision.models as models
-from transformers import AutoModel
 
-# Image Model
-class SimpleCNN(nn.Module):
+from transformers import AutoModel, AutoConfig
+
+# Image Model (ResNet or CNN)
+class ImageModel(nn.Module):
     def __init__(self, num_classes=4, pretrained=True):
         super().__init__()
 
@@ -44,19 +46,45 @@ class SimpleCNN(nn.Module):
             x = self.dropout(x)
             return self.fc(x)
 
-# Text Model
-class BERTClassifier(nn.Module):
-    def __init__(self, model_name='bert-base-uncased', num_classes=4):
+# Text Model (BERT)
+class TextModel(nn.Module):
+    def __init__(self, num_classes, pretrained, tfidf_dim=None):
         super().__init__()
-        self.bert = AutoModel.from_pretrained(model_name)
-        self.classifier = nn.Linear(self.bert.config.hidden_size, num_classes)
+        self.pretrained = pretrained
 
-    def forward(self, input_ids, attention_mask):
-        output = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        return self.classifier(output.pooler_output)
+        if pretrained:
+            self.bert = AutoModel.from_pretrained("bert-base-uncased")
+            hidden_size = self.bert.config.hidden_size
+            self.classifier = nn.Linear(hidden_size, num_classes)
+        else:
+            assert tfidf_dim is not None, "For non-pretrained, you must pass tfidf_dim"
+            self.bert = None  # No encoder used
+            self.classifier = nn.Linear(tfidf_dim, num_classes)
 
-# Tabular Model
-class TabularMLP(nn.Module):
+    def forward(self, x):
+        if isinstance(x, dict) and "input_ids" in x and "attention_mask" in x:
+            # Hugging Face tokenizer (pretrained transformers)
+            input_ids = x["input_ids"]
+            attention_mask = x["attention_mask"]
+            token_type_ids = x.get("token_type_ids", None)  # Optional
+
+            outputs = self.bert(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                token_type_ids=token_type_ids
+            )
+            cls_token = outputs.last_hidden_state[:, 0, :]  # Use [CLS] token
+            return self.classifier(cls_token)
+
+        elif isinstance(x, torch.Tensor):
+            # TF-IDF path (simple MLP or linear classifier)
+            return self.classifier(x)
+
+        else:
+            raise TypeError("Unsupported input type for TextModel.forward")
+
+# Tabular Model (MLP)
+class TabularModel(nn.Module):
     def __init__(self, input_dim, num_classes, hidden_dims=[64, 32], dropout=0.2, regression=False):
         super().__init__()
 
@@ -80,10 +108,10 @@ class TabularMLP(nn.Module):
 # Model Factory
 def model_factory(input_type, **kwargs):
     if input_type == "image":
-        return SimpleCNN(**kwargs)
+        return ImageModel(**kwargs)
     elif input_type == "text":
-        return BERTClassifier(**kwargs)
+        return TextModel(**kwargs)
     elif input_type == "tabular":
-        return TabularMLP(**kwargs)
+        return TabularModel(**kwargs)
     else:
-        raise ValueError(f'Unsupported input type: {input_type}')
+        raise ValueError(f"Unsupported input type: {input_type}")

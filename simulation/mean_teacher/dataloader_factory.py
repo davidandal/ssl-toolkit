@@ -1,60 +1,82 @@
-# dataloader_factory.py (Config-Driven Version with Separate Real SSL Support)
 
-import os
 import random
 import torch
+import random
 
-from sklearn.model_selection import train_test_split, StratifiedShuffleSplit
-from torch.utils.data import Dataset, DataLoader, TensorDataset
-from torchvision.datasets import ImageFolder
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from torch.utils.data import Dataset, Subset, DataLoader, TensorDataset
 from torchvision import transforms
-from PIL import Image
+from torchvision.datasets import ImageFolder
+from transformers.tokenization_utils_base import BatchEncoding
+from scipy.sparse import issparse
 
 # Dataloader Classes
-class SemiSupervisedDataset(Dataset):
-    def __init__(self, dataset, indices, transform=None):
+class LabeledFolderDataset(Dataset):
+    def __init__(self, dataset, transform=None):
         self.dataset = dataset
-        self.indices = indices
         self.transform = transform
 
     def __len__(self):
-        return len(self.indices)
+        return len(self.dataset)
 
     def __getitem__(self, idx):
-        x, y = self.dataset[self.indices[idx]]
+        x, y = self.dataset[idx]
         if self.transform:
             x = self.transform(x)
         return x, y
 
-class UnlabeledDataset(Dataset):
-    def __init__(self, dataset, indices, weak_transform=None, strong_transform=None):
+class UnlabeledFolderDataset(Dataset):
+    def __init__(self, dataset, weak_transform=None, strong_transform=None):
         self.dataset = dataset
-        self.indices = indices
         self.weak_transform = weak_transform
         self.strong_transform = strong_transform
 
     def __len__(self):
-        return len(self.indices)
+        return len(self.dataset)
 
     def __getitem__(self, idx):
-        x, _ = self.dataset[self.indices[idx]]
+        x = self.dataset[idx][0]  # Safely get only x
         x_w = self.weak_transform(x)
         x_s = self.strong_transform(x)
         return x_w, x_s
 
-class UnlabeledFolderDataset(Dataset):
-    def __init__(self, root, weak_transform, strong_transform):
-        self.paths = [os.path.join(root, f) for f in os.listdir(root) if f.endswith(('.jpg', '.jpeg', '.png', '.tiff', '.tif'))]
+class LabeledTextDataset(Dataset):
+    def __init__(self, encodings, labels):
+        self.encodings = encodings
+        self.labels = labels
+
+    def __getitem__(self, idx):
+        if isinstance(self.encodings, BatchEncoding) or isinstance(self.encodings, dict):
+            item = {k: v[idx] for k, v in self.encodings.items()}
+        elif isinstance(self.encodings, torch.Tensor):  # For TF-IDF tensors
+            item = self.encodings[idx]
+        else:
+            raise ValueError("Unsupported encoding type")
+
+        label = torch.tensor(self.labels[idx]) if not isinstance(self.labels[idx], torch.Tensor) else self.labels[idx]
+        return item, label
+
+    def __len__(self):
+        return len(self.labels)
+
+class UnlabeledTextDataset(Dataset):
+    def __init__(self, texts, weak_transform, strong_transform):
+        self.texts = texts
         self.weak_transform = weak_transform
         self.strong_transform = strong_transform
 
-    def __len__(self):
-        return len(self.paths)
-
     def __getitem__(self, idx):
-        img = Image.open(self.paths[idx]).convert("RGB")
-        return self.weak_transform(img), self.strong_transform(img)
+        text = self.texts[idx]
 
+        weak = self.weak_transform(text)
+        strong = self.strong_transform(text)
+
+        return weak, strong
+
+    def __len__(self):
+        return len(self.texts)
+    
 # Transform Functions
 class TabularWeakTransform:
     def __init__(self, noise_std=0.01):
@@ -83,11 +105,53 @@ class TabularValTransform:
     def __call__(self, x):
         return x  # No augmentation for validation
 
-# Dataloader Functions
-def create_image_dataloaders(config, base_transform):
-    num_labels_per_class = config["num_labels"] // len(config["image_classes"])
-    batch_size = config.get("batch_size", 64)
+class TextWeakTransform:
+    def __init__(self, tokenizer, max_length=128):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
 
+    def __call__(self, text):
+        if isinstance(self.tokenizer.tokenizer, TfidfVectorizer):
+            vector = self.tokenizer.tokenizer.transform([text]).toarray()[0]
+            return torch.tensor(vector, dtype=torch.float32)
+        else:
+            tokens = self.tokenizer.tokenizer(
+                text,
+                truncation=True,
+                padding="max_length",
+                max_length=self.max_length,
+                return_tensors="pt"
+            )
+            return {k: v.squeeze(0) for k, v in tokens.items()}
+
+class TextStrongTransform:
+    def __init__(self, tokenizer, max_length=128):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+
+    def synonym_replace(self, text, p=0.1):
+        # Optional: Add a real synonym replacement logic using WordNet or external API
+        return text  # ← Just placeholder for now
+
+    def __call__(self, text):
+        # Strong transformation (e.g., synonym replacement)
+        aug_text = self.synonym_replace(text)
+
+        if isinstance(self.tokenizer.tokenizer, TfidfVectorizer):
+            vector = self.tokenizer.tokenizer.transform([text]).toarray()[0]
+            return torch.tensor(vector, dtype=torch.float32)
+        else:
+            tokens = self.tokenizer.tokenizer(
+                aug_text,
+                truncation=True,
+                padding="max_length",
+                max_length=self.max_length,
+                return_tensors="pt"
+            )
+            return {k: v.squeeze(0) for k, v in tokens.items()}
+
+# Dataloader Functions
+def create_image_dataloaders(num_labels, image_classes, dataset_path, base_transform, batch_size=64):
     # Define transforms
     transform_weak = transforms.Compose([
         base_transform,
@@ -102,19 +166,20 @@ def create_image_dataloaders(config, base_transform):
     transform_val = base_transform
 
     # Load dataset and create classwise indices
-    full_dataset = ImageFolder(root=config["dataset_path"])
-    class_to_idx = {cls: i for cls, i in full_dataset.class_to_idx.items() if cls in config["image_classes"]}
+    full_dataset = ImageFolder(root=dataset_path)
+    num_labels_per_class = int(num_labels * len(full_dataset) / len(image_classes))
+    class_to_idx = {cls: i for cls, i in full_dataset.class_to_idx.items() if cls in image_classes}
     selected_indices = [i for i, (_, label) in enumerate(full_dataset.samples) if label in class_to_idx.values()]
 
-    # Limit to ~300 per class
+    # Limit to 1000 examples per class
     classwise_limited_indices = {cls: [] for cls in class_to_idx.values()}
     for idx in selected_indices:
         _, label = full_dataset.samples[idx]
-        if len(classwise_limited_indices[label]) < 1000:
+        if len(classwise_limited_indices[label]) < 2000:
             classwise_limited_indices[label].append(idx)
     selected_indices = [i for sublist in classwise_limited_indices.values() for i in sublist]
 
-    # Stratified split into train_pool and val_indices
+    # Stratified split of labeled dataset into train_pool and val_indices
     all_labels = [full_dataset.samples[i][1] for i in selected_indices]
     train_pool_indices, val_indices = train_test_split(
         selected_indices,
@@ -139,9 +204,9 @@ def create_image_dataloaders(config, base_transform):
         ulb_indices.extend(ulb)
 
     # Instatiate datasets and dataloaders
-    lb_dataset = SemiSupervisedDataset(full_dataset, lb_indices, transform_weak)
-    ulb_dataset = UnlabeledDataset(full_dataset, ulb_indices, transform_weak, transform_strong)
-    val_dataset = SemiSupervisedDataset(full_dataset, val_indices, transform_val)
+    lb_dataset = LabeledFolderDataset(Subset(full_dataset, lb_indices), transform_weak)
+    ulb_dataset = UnlabeledFolderDataset(Subset(full_dataset, ulb_indices), transform_weak, transform_strong)
+    val_dataset = LabeledFolderDataset(Subset(full_dataset, val_indices), transform_val)
 
     lb_loader = DataLoader(lb_dataset, batch_size=batch_size, shuffle=True)
     ulb_loader = DataLoader(ulb_dataset, batch_size=batch_size, shuffle=True)
@@ -149,30 +214,46 @@ def create_image_dataloaders(config, base_transform):
 
     return lb_loader, ulb_loader, val_loader
 
-def create_tabular_dataloaders(config, X, y):
-    num_labels = config.get("num_labels", 400)
-    batch_size = config.get("batch_size", 64)
+def create_text_dataloaders(X_train, y_train, X_val, y_val, X_unlabeled, tokenizer, batch_size=64):
+    # TF-IDF case (X_train is sparse)
+    is_tfidf = issparse(X_train)
+    if is_tfidf:
+        X_train = torch.tensor(X_train.toarray(), dtype=torch.float32)
+        y_train = torch.tensor(y_train)
 
-    # Stratified sampling for labeled data
-    stratifier = StratifiedShuffleSplit(n_splits=1, train_size=num_labels, random_state=42)
-    lb_idx, rest_idx = next(stratifier.split(X, y))
+        X_val = torch.tensor(X_val.toarray(), dtype=torch.float32)
+        y_val = torch.tensor(y_val)
 
-    # From the rest, sample a validation set (same size as lb_idx)
-    val_size = 1 - num_labels
-    stratifier_val = StratifiedShuffleSplit(n_splits=1, train_size=val_size, random_state=99)
-    val_idx, ulb_idx = next(stratifier_val.split(X[rest_idx], y[rest_idx]))
-    val_idx = rest_idx[val_idx]
-    ulb_idx = rest_idx[ulb_idx]
+        # X_unlabeled = torch.tensor(X_unlabeled.toarray(), dtype=torch.float32)
 
-    base_dataset = TensorDataset(X, y)
+    # Weak and strong transforms
+    weak_transform = TextWeakTransform(tokenizer)
+    strong_transform = TextStrongTransform(tokenizer)
+
+    # Datasets
+    lb_dataset = LabeledTextDataset(X_train, y_train)
+    val_dataset = LabeledTextDataset(X_val, y_val)
+    ulb_dataset = UnlabeledTextDataset(X_unlabeled, weak_transform, strong_transform)
+
+    # Data loaders
+    lb_loader = DataLoader(lb_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    ulb_loader = DataLoader(ulb_dataset, batch_size=batch_size, shuffle=True)
+
+    return lb_loader, val_loader, ulb_loader
+
+def create_tabular_dataloaders(X_train, y_train, X_val, y_val, X_unlabeled, batch_size=64):
+    base_lb_dataset = TensorDataset(X_train, y_train)
+    base_val_dataset = TensorDataset(X_val, y_val)
+    base_ulb_dataset = TensorDataset(X_unlabeled)
 
     transform_weak = TabularWeakTransform(noise_std=0.01)
     transform_strong = TabularStrongTransform(noise_std=0.05, mask_ratio=0.1)
     transform_val = TabularValTransform()
 
-    lb_dataset = SemiSupervisedDataset(base_dataset, lb_idx, transform_weak)
-    ulb_dataset = UnlabeledDataset(base_dataset, ulb_idx, transform_weak, transform_strong)
-    val_dataset = SemiSupervisedDataset(base_dataset, val_idx, transform_val)
+    lb_dataset = LabeledFolderDataset(base_lb_dataset, transform=transform_weak)
+    val_dataset = LabeledFolderDataset(base_val_dataset, transform=transform_val)
+    ulb_dataset = UnlabeledFolderDataset(base_ulb_dataset, transform_weak, transform_strong)
 
     lb_loader = DataLoader(lb_dataset, batch_size=batch_size, shuffle=True)
     ulb_loader = DataLoader(ulb_dataset, batch_size=batch_size, shuffle=True)
@@ -181,27 +262,11 @@ def create_tabular_dataloaders(config, X, y):
     return lb_loader, ulb_loader, val_loader
 
 # Factory
-def dataloader_factory(config, **kwargs):
-    if config["input_type"] == "image":
-        return create_image_dataloaders(config, **kwargs)
-    elif config["input_type"] == "tabular":
-        return create_tabular_dataloaders(config, **kwargs)       
-
-def real_dataloader_factory(config):
-    labeled_path = config["labeled_path"]
-    unlabeled_path = config["unlabeled_path"]
-    batch_size = config.get("batch_size", 64)
-
-    transform_weak = config["transform_weak"]
-    transform_strong = config["transform_strong"]
-    transform_val = config["transform_val"]
-
-    lb_dataset = ImageFolder(root=labeled_path, transform=transform_weak)
-    ulb_dataset = UnlabeledFolderDataset(unlabeled_path, weak_transform=transform_weak, strong_transform=transform_strong)
-    val_dataset = ImageFolder(root=labeled_path, transform=transform_val)  # Optional: separate val folder if needed
-
-    lb_loader = DataLoader(lb_dataset, batch_size=batch_size, shuffle=True)
-    ulb_loader = DataLoader(ulb_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-
-    return lb_loader, ulb_loader, val_loader
+def dataloader_factory(input_type, **kwargs):
+    if input_type == "image":
+        return create_image_dataloaders(**kwargs)
+    elif input_type == "text":
+        return create_text_dataloaders(**kwargs)
+    elif input_type == "tabular":
+        return create_tabular_dataloaders(**kwargs)    
+       
