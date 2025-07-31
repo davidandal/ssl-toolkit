@@ -3,36 +3,36 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 
-from transformers import AutoModel, AutoConfig
+from transformers import AutoModel
 
 # Image Model (ResNet or CNN)
 class ImageModel(nn.Module):
-    def __init__(self, num_classes=4, pretrained=True):
+    def __init__(self, num_classes, pretrained):
         super().__init__()
 
         self.pretrained = pretrained
 
+        # Use pretrained ResNet18
         if self.pretrained:
-            # Use pretrained ResNet18
             self.model = models.resnet18(pretrained=True)
             self.model.fc = nn.Linear(self.model.fc.in_features, num_classes)
+        # Use custom CNN
         else:
-            # Use custom CNN
             self.model = nn.Sequential(
                 nn.Conv2d(3, 32, kernel_size=3, padding=1),
                 nn.BatchNorm2d(32),
                 nn.ReLU(),
-                nn.MaxPool2d(2),  # 224 → 112
+                nn.MaxPool2d(2),
 
                 nn.Conv2d(32, 64, kernel_size=3, padding=1),
                 nn.BatchNorm2d(64),
                 nn.ReLU(),
-                nn.MaxPool2d(2),  # 112 → 56
+                nn.MaxPool2d(2),
 
                 nn.Conv2d(64, 128, kernel_size=3, padding=1),
                 nn.BatchNorm2d(128),
                 nn.ReLU(),
-                nn.MaxPool2d(2),  # 56 → 28
+                nn.MaxPool2d(2),
             )
             self.dropout = nn.Dropout(0.5)
             self.fc = nn.Linear(128 * 28 * 28, num_classes)
@@ -48,7 +48,7 @@ class ImageModel(nn.Module):
 
 # Text Model (BERT)
 class TextModel(nn.Module):
-    def __init__(self, num_classes, pretrained, tfidf_dim=None):
+    def __init__(self, num_classes, pretrained, tfidf_dim):
         super().__init__()
         self.pretrained = pretrained
 
@@ -85,7 +85,7 @@ class TextModel(nn.Module):
 
 # Tabular Model (MLP)
 class TabularModel(nn.Module):
-    def __init__(self, input_dim, num_classes, hidden_dims=[64, 32], dropout=0.2, regression=False):
+    def __init__(self, input_dim, num_classes, regression, hidden_dims=[64, 32], dropout=0.2):
         super().__init__()
 
         layers = []
