@@ -39,6 +39,29 @@ This repository contains two SSL algorithm implementations, each with its own tr
 
 ---
 
+## Limitations
+
+While this toolkit provides a flexible foundation for semi-supervised learning, there are important limitations to keep in mind:
+
+### Class Imbalance
+
+Many real-world datasets are **imbalanced**, meaning some classes appear far more frequently than others.  
+This can lead to:
+- Poor generalization on minority classes
+- Biased pseudo-labeling or consistency loss
+
+### Recommendation (Future Work)
+
+To better handle class imbalance in future iterations, consider:
+- **Class-weighted loss functions** (e.g., `nn.CrossEntropyLoss(weight=...)`)
+- **Over- or under-sampling** within labeled data before training
+- **Threshold adjustment** during evaluation or pseudo-labeling to calibrate for minority class predictions
+- **Label distribution-aware confidence filtering** when selecting pseudo-labels
+
+These enhancements can be integrated with minimal changes into the current pipeline structure.
+
+---
+
 ## Reuse
 
 Feel free to fork and adapt the pipelines to your own data or domain.
