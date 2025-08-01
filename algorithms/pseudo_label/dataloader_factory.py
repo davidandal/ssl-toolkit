@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 class TabularDataset(Dataset):
     def __init__(self, features, labels=None):
         self.features = torch.tensor(features, dtype=torch.float32)
-        self.labels = torch.tensor(labels, dtype=torch.long) if labels != None else None
+        self.labels = torch.tensor(labels, dtype=torch.long) if labels is not None else None
 
     def __len__(self):
         return len(self.features)
