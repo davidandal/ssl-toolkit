@@ -19,8 +19,12 @@ class ImageTokenizer:
             )
         ])
 
-    def __call__(self, image):
-        return self.transforms(image)
+    def __call__(self, dataset):
+        if hasattr(dataset, "dataset"):
+            dataset.dataset.transform = self.transforms
+        else:
+            dataset.transform = self.transforms
+        return dataset
 
 class TextTokenizer:
     def __init__(self, text_column, target_column, pretrained):

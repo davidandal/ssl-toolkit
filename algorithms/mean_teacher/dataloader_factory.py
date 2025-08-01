@@ -162,8 +162,8 @@ def create_image_dataloaders(train, validation, unlabeled, batch_size):
 
     # Instatiate datasets and dataloaders
     labeled_dataset = GeneralLabeledDataset(train, transform_weak)
-    validation_dataset = GeneralLabeledDataset(unlabeled)
-    unlabeled_dataset = GeneralUnlabeledDataset(validation, transform_weak, transform_strong)
+    validation_dataset = GeneralLabeledDataset(validation)
+    unlabeled_dataset = GeneralUnlabeledDataset(unlabeled, transform_weak, transform_strong)
 
     labeled_loader = DataLoader(labeled_dataset, batch_size=batch_size, shuffle=True)
     validation_loader = DataLoader(validation_dataset, batch_size=batch_size, shuffle=False)
