@@ -49,7 +49,7 @@ Edit the `config` dictionary at the top of the notebook to match your dataset an
 
 ## Output
 
-Once your configuration is set and your datasets are prepared, simply **run the notebook** (`mean_teacher.ipynb`).
+Once your configuration is set and your datasets are prepared, simply **run the notebook** (`main.ipynb`).
 
 #### What to Expect:
 
